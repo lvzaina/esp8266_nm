@@ -43,7 +43,6 @@ struct	espconn		server_conn;		// server connection
 LOCAL	os_timer_t	ping_timer;
 
 struct	espconn		server_post_conn;	// server connection
-		ip_addr_t	serveri_post_ip;	// server ip address
 		esp_tcp		server_post_tcp;	// server tcp connection
 LOCAL	os_timer_t	post_timer;
 		int			g_times = 0;
@@ -109,7 +108,7 @@ void tcp_connected_post( void *arg )
 #else
 	remote_hostname = REMOTE_IP;
 #endif
-	os_sprintf( json_data, "{\"value\": \"%d\"}", times );
+	os_sprintf( json_data, "{\"value\": \"%d\"}", g_times );
 	os_sprintf( buffer, "POST /device/%s/sensor/%s/datapoints HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Type: text/xml\r\nContent-Length: %d\r\n\r\n%s",
 			NETVIOM_DEVICE_ID, g_sensor_id, remote_hostname, os_strlen( json_data ), json_data);
 
@@ -237,6 +236,7 @@ void dns_done( const char *name, ip_addr_t *ipaddr, void *arg )
 void to_ip_address( )
 {
 	struct espconn *conn = &server_conn;
+	struct espconn *post_conn = &server_post_conn;
 	ipaddr_aton(REMOTE_IP, &server_ip);
 	ip_addr_t *target = &server_ip;
 
@@ -258,7 +258,7 @@ void to_ip_address( )
 	post_conn->proto.tcp->local_port = espconn_port();
 	post_conn->proto.tcp->remote_port = REMOTE_PORT;
 
-	os_memcpy( post_conn->proto.tcp->remote_ip, &ipaddr->addr, 4 );
+	os_memcpy( post_conn->proto.tcp->remote_ip, &target->addr, 4 );
 
 
 	os_timer_disarm( &ping_timer);
