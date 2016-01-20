@@ -301,7 +301,7 @@ user_esp_platform_init(void)
 
 
 #if AP_CACHE
-    wifi_station_ap_number_set(AP_CACHE_NUMBER);
+    //wifi_station_ap_number_set(AP_CACHE_NUMBER);
 #endif
 
 #if 0
@@ -343,7 +343,6 @@ user_esp_platform_init(void)
 #endif
 		
 		wifi_station_set_hostname( HOST_NAME );
-        wifi_set_opmode(STATION_MODE);
     }
 
 #if SENSOR_DEVICE

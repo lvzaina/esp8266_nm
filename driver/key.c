@@ -89,9 +89,11 @@ LOCAL void ICACHE_FLASH_ATTR
 key_5s_cb(struct single_key_param *single_key)
 {
     os_timer_disarm(&single_key->key_5s);
-
+	
+	os_printf( " |LVZAINA| ===> 5s\n");
     // low, then restart
     if (0 == GPIO_INPUT_GET(GPIO_ID_PIN(single_key->gpio_id))) {
+		os_printf( " |LVZAINA| ===> GO\n");
         if (single_key->long_press) {
             single_key->long_press();
         }
@@ -109,12 +111,14 @@ key_50ms_cb(struct single_key_param *single_key)
 {
     os_timer_disarm(&single_key->key_50ms);
 
+	os_printf( " |LVZAINA| ===> 50ms\n");
     // high, then key is up
     if (1 == GPIO_INPUT_GET(GPIO_ID_PIN(single_key->gpio_id))) {
         os_timer_disarm(&single_key->key_5s);
         single_key->key_level = 1;
         gpio_pin_intr_state_set(GPIO_ID_PIN(single_key->gpio_id), GPIO_PIN_INTR_NEGEDGE);
 
+		os_printf( " |LVZAINA| ===> GO\n");
         if (single_key->short_press) {
             single_key->short_press();
         }
@@ -135,13 +139,14 @@ key_intr_handler(struct keys_param *keys)
     uint8 i;
     uint32 gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
 
+	os_printf( " |LVZAINA| ===> handler\n");
     for (i = 0; i < keys->key_num; i++) {
         if (gpio_status & BIT(keys->single_key[i]->gpio_id)) {
             //disable interrupt
             gpio_pin_intr_state_set(GPIO_ID_PIN(keys->single_key[i]->gpio_id), GPIO_PIN_INTR_DISABLE);
 
             //clear interrupt status
-            GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT(keys->single_key[i]->gpio_id));
+            GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT(keys->single_key[i]->gpio_id) /*| BIT( 4)) */);
 
             if (keys->single_key[i]->key_level == 1) {
                 // 5s, restart & enter softap mode
