@@ -48,6 +48,7 @@ LOCAL uint8 alert_led_times = 1;
 LOCAL uint8 moded = 0;
 LOCAL uint8 m_smart = 0;
 LOCAL uint8 m_start = 0;
+uint8_t open_settings_mode = 0;
 
 uint8_t netviom_router_connected = 0;
 uint8_t netviom_server_connected = 0;
@@ -446,8 +447,10 @@ user_beep_init(void)
 	
 	PIN_PULLUP_DIS( SENSOR_BEEP_IO_MUX);
 	//PIN_PULLUP_EN( SENSOR_BEEP_IO_MUX);
-	user_beep_timer_cb( 1);
-	
+	if( open_settings_mode == 0)
+		user_beep_timer_cb( 1);
+	else
+		user_beep_timer_cb( 2);	
 }
 
 /******************************************************************************
@@ -471,19 +474,10 @@ user_sensor_short_press(void)
 {
     os_printf(" LVZAINA ===> short start! \n");
 	
-	uint32 gpio_status;
-	gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
-	//clear interrupt status
-	GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT( SENSOR_KEY_IO_NUM));
-	
-    //GPIO_OUTPUT_SET(GPIO_ID_PIN(SENSOR_LINK_LED_IO_NUM), 0);
-	set_led_alert( 0);
+		
 	
     os_printf(" LVZAINA ===> short end! \n");
 	
-#if NETVIOM_USE_PIR
-	stop_pir();	
-#endif
 }
 
 #ifdef SENSOR_DEEP_SLEEP
@@ -660,10 +654,20 @@ user_update_status( NETVIOM_STATUS_VALUE state)
 void ICACHE_FLASH_ATTR
 user_sensor_init(uint8 active)
 {
-
+	uint32_t t_value = 9;
 	user_link_led_init();
 	user_change_status( NETVIOM_STATUS_POWERUP, 300);
-
+	
+	PIN_FUNC_SELECT( SENSOR_KEY_IO_MUX, SENSOR_KEY_IO_FUNC);
+	gpio_output_set(0, 0, 0, GPIO_ID_PIN( SENSOR_KEY_IO_NUM));
+	t_value = GPIO_INPUT_GET(GPIO_ID_PIN(SENSOR_KEY_IO_NUM)); 
+	os_printf( " |LVZAINA| ===> MODE: [%d]\n", t_value);
+	if ( t_value == 0) 
+	{
+		open_settings_mode = 1;
+		/*user_sensor_short_press();*/
+	}
+   
     //wifi_status_led_install(SENSOR_WIFI_LED_IO_NUM, SENSOR_WIFI_LED_IO_MUX, SENSOR_WIFI_LED_IO_FUNC);
 	/*
     if (wifi_get_opmode() != SOFTAP_MODE) {

@@ -2,18 +2,27 @@
 #define __USER_NETVIOM_H__
 
 #include "c_types.h"
-#define NETVIOM_DEVICE_ID			"700100000046"
+
+#define NETVIOM_DEVICE_ID			"700100000029"
 
 #define NETVIOM_SERVER_PING_TIME	20*1000 // ms, 保活间隔时长
-#define NETVIOM_PIR_PING_DELAY_TIME	2500 // ms, 保活间隔时长
+#define NETVIOM_PIR_PING_DELAY_TIME	500 // ms, 保活间隔时长
 
 #define USE_DNS					true // if true, device will try to resolve REMOTE_HOST, otherwise REMOTE_IP will be used.
 
 #define NETVIOM_USE_PIR			true 
 
 #if NETVIOM_USE_PIR
-	#define PIR_TIME_INTERVAL_40M	400*1000 // us ,PIR 报警脉宽
-	#define PIR_TIME_INTERVAL_200M	2000*1000 // us ,PIR 报警脉宽
+
+//#define NETVIOM_USE_PIR_40M	
+#define NETVIOM_USE_PIR_200M	
+
+#ifdef NETVIOM_USE_PIR_40M
+	#define PIR_TIME_INTERVAL	400*1000 // us ,PIR 报警脉宽
+#endif
+#ifdef NETVIOM_USE_PIR_200M
+	#define PIR_TIME_INTERVAL	2000*1000 // us ,PIR 报警脉宽
+#endif
 	#define PIR_START_TIME			45*1000 // ms ,开机延时
 	#define PIR_CONFIG_START_TIME	5*1000 // ms ,配置完成PIR启动延时
 	#define PIR_DELAY_TIME			3*1000 // ms ,每次报警间隔延时
@@ -53,6 +62,8 @@ typedef enum {
 
 void ICACHE_FLASH_ATTR user_update_status( NETVIOM_STATUS_VALUE state); 
 
+#define DEFAULT_VER		200
+
 typedef struct _rw_info{
 	uint32_t gpio_id_0;
 	uint32_t gpio_id_1;
@@ -61,11 +72,16 @@ typedef struct _rw_info{
 	uint32_t gpio_id_alarm;
 	uint32_t time;
 	uint32_t key;
+	uint32_t ver;
+	unsigned char id[16];
 } rw_info;
 
 #define FLASH_HEAD_ADDR 0x3C000
 
 #define LVZAINA_FLASH_KEY 0x99
 
+void ICACHE_FLASH_ATTR set_netviom_id( unsigned char* id);
+#define NETVIOM_SETTINGS_PORT	0x999 // 
+#define NETVIOM_SETTINGS_CMD	"Netviom-Settings-Set-ID" // 
 #endif
 

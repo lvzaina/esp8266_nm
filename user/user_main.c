@@ -9,6 +9,7 @@
  *     2014/1/1, v1.0 create this file.
 *******************************************************************************/
 #include "ets_sys.h"
+#define USE_US_TIMER			
 #include "osapi.h"
 
 #include "os_type.h"
@@ -23,6 +24,7 @@
 #include "easygpio.h"
 #include "user_sensor.h"
 #include "user_json.h"
+#include "user_server.h"
 
 #if ESP_PLATFORM
 #include "user_esp_platform.h"
@@ -52,12 +54,14 @@ struct	espconn		server_post_conn;	// server connection
 LOCAL	os_timer_t	post_timer;
 		int			g_times = 0;
 		char		g_sensor_id[ 16];
+		char		s_netviom_id[ 16];
 		char		json_data[ 256 ];
 		char		buffer[ 1024 ];
 struct jsontree_context m_json;
 
 extern uint8_t netviom_router_connected;
 extern uint8_t netviom_server_connected;
+extern uint8_t open_settings_mode;
 
 LOCAL	os_timer_t	alert_timer;
 LOCAL	os_timer_t	key_timer;
@@ -82,24 +86,24 @@ const char *gpio_type_desc[] =
 };
 
 LOCAL os_timer_t pir_timer;
+LOCAL os_timer_t _pir_timer;
 
-uint32 pir_time_intr_up;
-uint32 pir_time_intr_down;
-uint32 pir_time_intr_interval;
-uint32 pir_time_intr_first = 1;
+uint32 pir_watchdog_key = 0;
+uint32 pir_watchdog_over = 0;
+uint32 pir_watchdog_interval = 0;
 uint8_t g_pir_stop = 1;
 uint8_t m_key_level = 0;
 LOCAL os_timer_t pir_server_timeout_timer;
 uint32_t pir_server_timeout_pass = -1;
 
-LOCAL void ICACHE_FLASH_ATTR pir_register_intr_up();
-LOCAL void ICACHE_FLASH_ATTR pir_register_intr_down();
 
-LOCAL void ICACHE_FLASH_ATTR pir_handler_down();
+void ICACHE_FLASH_ATTR netviom_handler();
+void ICACHE_FLASH_ATTR pir_loop();
 
 void rwinfo_setup( rw_info *prw);
 
 #endif
+LOCAL os_timer_t reboot_timer;
 
 void user_rf_pre_init(void)
 {
@@ -114,14 +118,26 @@ void ICACHE_FLASH_ATTR show_sysinfo()
 
 	os_printf("\n\nSDK version: [%s]\n", system_get_sdk_version());
 
-	os_printf("SYSTEM INIT OVER\n");
 	os_printf("==========SYS INFO==========\n");
 	system_print_meminfo();
 	os_printf("CHIP   ID: [%d]\n", chipid);
 	os_printf("HEAP SIZE: [%d]\n", heepsize);
 	os_printf("RTC  TIME: [%d]\n", rtctime);
 	os_printf("SYS  TIME: [%d]\n", systime);
+	os_printf("SYS  TIME: [%d]\n", systime);
+    os_printf("NetviomID: [%s]\n", s_netviom_id);
 	os_printf("==========SYS INFO==========\n");
+}
+
+void ICACHE_FLASH_ATTR
+reboot(void)
+{
+	os_printf("Reboot system !!!\n");
+
+	os_timer_disarm( &reboot_timer);
+	os_timer_setfn( &reboot_timer, system_restart, NULL);
+	os_timer_arm( &reboot_timer, 10, 0); // 10ms
+
 }
 
 void netviom_alert()
@@ -321,7 +337,7 @@ void tcp_connected_post( void *arg )
 #endif
 	os_sprintf( json_data, "{\"value\":%d}", g_times );
 	os_sprintf( buffer, "POST /device/%s/sensor/%s/datapoints HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Type: text/xml\r\nContent-Length: %d\r\n\r\n%s",
-			NETVIOM_DEVICE_ID, g_sensor_id, remote_hostname, os_strlen( json_data ), json_data);
+			s_netviom_id, g_sensor_id, remote_hostname, os_strlen( json_data ), json_data);
 
 	os_printf( " POST ===> Sending: [%s]", buffer );
 	espconn_send( conn, buffer, os_strlen( buffer ) );
@@ -353,7 +369,7 @@ void tcp_connected_ping( void *arg )
 #endif
 	
 	os_sprintf( buffer, "POST /device/%s/sensor/000/datapoints HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nContent-Type: text/xml\r\nContent-Length: 0\r\n\r\n",
-			NETVIOM_DEVICE_ID, remote_hostname);
+			s_netviom_id, remote_hostname);
 
 	os_printf( " PING ===> Sending: [%s]", buffer );
 	espconn_send( conn, buffer, os_strlen( buffer ) );
@@ -390,12 +406,13 @@ void post_tcp_disconnected( void *arg )
 
 void netviom_ping()
 {
-	/*
-	stop_pir();
-	os_timer_disarm( &ping_delay_timer);
-	os_timer_setfn( &ping_delay_timer, start_pir, NULL);
-	os_timer_arm( &ping_delay_timer, NETVIOM_PIR_PING_DELAY_TIME, 0); // 10ms
-	*/
+	if( g_pir_stop == 0)
+	{
+		stop_pir();
+		os_timer_disarm( &ping_delay_timer);
+		os_timer_setfn( &ping_delay_timer, start_pir, NULL);
+		os_timer_arm( &ping_delay_timer, NETVIOM_PIR_PING_DELAY_TIME, 0); 
+	}
 
 	espconn_regist_connectcb( &server_conn, tcp_connected_ping);
 	espconn_regist_disconcb( &server_conn, tcp_disconnected);
@@ -502,6 +519,9 @@ void rwinfo_load()
 {
 	if( read_cfg_flash( &rw) == false || rw.key != LVZAINA_FLASH_KEY)
 	{
+
+		os_printf(" |LVZAINA| ===> INIT\n");
+
 		os_memset(&rw, 0, sizeof(rw_info));
 		rw.gpio_id_0 = 1; 
 		rw.gpio_id_1 = 1; 
@@ -510,7 +530,26 @@ void rwinfo_load()
 		rw.gpio_id_alarm = 1; 
 		rw.time = 10;
 		rw.key = LVZAINA_FLASH_KEY; 
+		rw.ver = DEFAULT_VER; 
+		os_strcpy(rw.id, NETVIOM_DEVICE_ID);
 	}
+
+	if( rw.ver != DEFAULT_VER)
+	{
+		rw.ver = DEFAULT_VER;
+		write_cfg_flash( &rw);
+	}
+	/*os_printf(" |LVZAINA| ===> %X\n", *(rw.id));*/
+	if(  *(rw.id) == 0xFF || *(rw.id) == 0x00)
+		os_strcpy( rw.id, NETVIOM_DEVICE_ID);
+	os_strcpy( s_netviom_id, rw.id);
+}
+
+void ICACHE_FLASH_ATTR set_netviom_id( unsigned char* id)
+{
+	os_strcpy( rw.id, id);
+	write_cfg_flash( &rw);
+	reboot();
 }
 
 void rwinfo_init( rw_info *prw, uint16_t g0, uint16_t g1, uint16_t g2, uint16_t g_pir, uint16_t g_a, uint32_t time, uint32_t key)
@@ -545,11 +584,19 @@ void ICACHE_FLASH_ATTR
 init_netviom_device()
 {
 		ETS_GPIO_INTR_DISABLE(); // Disable gpio interrupts
+		
+		ETS_GPIO_INTR_ATTACH( netviom_handler, NULL); // GPIO interrupt handler
 #if NETVIOM_USE_PIR
 	
-		GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT( SENSOR_PIR_IO_NUM) );
-		pir_register_intr_up();
+		//GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT( SENSOR_PIR_IO_NUM) );
+		PIN_FUNC_SELECT( SENSOR_PIR_IO_MUX, SENSOR_PIR_IO_FUNC);
+		GPIO_DIS_OUTPUT( SENSOR_PIR_IO_NUM);
+		PIN_PULLUP_DIS( SENSOR_PIR_IO_MUX);
 		
+		os_timer_disarm(&pir_timer);
+		os_timer_setfn(&pir_timer, (os_timer_func_t *)pir_loop, NULL);
+		os_timer_arm_us(&pir_timer, 0x64, 1);	
+			
 #endif
 		// key	
         PIN_FUNC_SELECT( SENSOR_KEY_IO_MUX, SENSOR_KEY_IO_FUNC);
@@ -573,13 +620,7 @@ close_netviom_device()
 {
 	ETS_GPIO_INTR_DISABLE(); // Disable gpio interrupts
 #if NETVIOM_USE_PIR
-	
-		GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT( SENSOR_PIR_IO_NUM) );
-		PIN_FUNC_SELECT( SENSOR_PIR_IO_MUX, SENSOR_PIR_IO_FUNC);
-		GPIO_DIS_OUTPUT( SENSOR_PIR_IO_NUM);
-		PIN_PULLUP_DIS( SENSOR_PIR_IO_MUX);
-        gpio_pin_intr_state_set(GPIO_ID_PIN( SENSOR_PIR_IO_NUM), GPIO_PIN_INTR_DISABLE);
-		
+		os_timer_disarm(&pir_timer);
 #endif
 		PIN_FUNC_SELECT( SENSOR_KEY_IO_MUX, SENSOR_KEY_IO_FUNC);
         gpio_output_set(0, 0, 0, GPIO_ID_PIN( SENSOR_KEY_IO_NUM));
@@ -681,6 +722,8 @@ void wifi_handle_event_cb(System_Event_t *evt)
 					IP2STR(&evt->event_info.got_ip.mask),
 					IP2STR(&evt->event_info.got_ip.gw));
 			os_printf("\n");*/
+			if( open_settings_mode == 1)
+				tcpserver_init();
 			netviom_server_connected = 0;
 			netviom_router_connected = 1;
 			user_quick_status( NETVIOM_STATUS_CONNECTED);
@@ -717,6 +760,45 @@ void alerting()
 	/*user_beep_timer_cb( 1);*/
 }
 
+void ICACHE_FLASH_ATTR
+pir_loop()
+{
+    if (1 == GPIO_INPUT_GET(GPIO_ID_PIN( SENSOR_PIR_IO_NUM))) 
+	{
+		if( pir_watchdog_key == 0)
+		{
+			pir_watchdog_key = system_get_time(); 
+		}
+	}
+	else
+	{
+		if( pir_watchdog_key != 0)
+		{
+			pir_watchdog_over = system_get_time();
+			pir_watchdog_interval = pir_watchdog_over - pir_watchdog_key;
+			pir_watchdog_key = 0;
+			if( PIR_TIME_INTERVAL < pir_watchdog_interval )
+			{
+				os_printf( " |LVZAINA| ======> %d < %d\n", PIR_TIME_INTERVAL, pir_watchdog_interval);
+				if( g_pir_stop != 1)
+				{
+					stop_pir();
+					alerting();
+					os_timer_disarm(&_pir_timer);
+					os_timer_setfn(&_pir_timer, (os_timer_func_t *)start_pir, NULL);
+					os_timer_arm(&_pir_timer, (rw.time*1000) + PIR_DELAY_TIME, 0);	
+		
+				}
+			}
+		}
+		else
+		{
+			pir_watchdog_over = 0;
+		}
+	}
+
+}
+
 LOCAL void ICACHE_FLASH_ATTR
 key_hander()
 {
@@ -746,27 +828,16 @@ key_hander()
 
 
 
-LOCAL void ICACHE_FLASH_ATTR
-pir_handler_up()
+void ICACHE_FLASH_ATTR
+netviom_handler()
 {
 	uint32 gpio_status;	
 	gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
-	os_printf( " |LVZAINA| ===> intr_handler_up: %d,(pir_off:%d)\n", gpio_status, g_pir_stop);
 	ETS_GPIO_INTR_DISABLE(); // Disable gpio interrupts
-	
-	if( gpio_status & BIT(SENSOR_PIR_IO_NUM))
-	{
-		GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT( SENSOR_PIR_IO_NUM) );
-		
-		pir_time_intr_up = system_get_time();
-	
-		//pir_register_intr_down();
-		ETS_GPIO_INTR_ATTACH( pir_handler_down, NULL); // GPIO interrupt handler
-		gpio_pin_intr_state_set( GPIO_ID_PIN( SENSOR_PIR_IO_NUM), GPIO_PIN_INTR_NEGEDGE); // Interrupt on NEGATIVE edge
-		
-	}
+
 	if( gpio_status & BIT(SENSOR_KEY_IO_NUM))
 	{
+		os_printf( " |LVZAINA| ===> KEY: GPIO%d\n", SENSOR_KEY_IO_NUM);
 		GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT( SENSOR_KEY_IO_NUM) );
 
 		key_hander();
@@ -776,115 +847,10 @@ pir_handler_up()
 	{
 		GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT( SENSOR_ALARM_IO_NUM) );
 
-		os_printf( " |LVZAINA| ===> ALARM !");
+		os_printf( " |LVZAINA| ===> ALARM: GPIO%d\n", SENSOR_ALARM_IO_NUM);
 
 	}
 	ETS_GPIO_INTR_ENABLE(); // Enable gpio interrupts
-}
-
-LOCAL void ICACHE_FLASH_ATTR
-pir_register_intr_up_ssl()
-{
-	ETS_GPIO_INTR_DISABLE(); // Disable gpio interrupts
-
-	ETS_GPIO_INTR_ATTACH( pir_handler_up, NULL); // GPIO interrupt handler
-	PIN_FUNC_SELECT( SENSOR_PIR_IO_MUX, SENSOR_PIR_IO_FUNC);
-	GPIO_DIS_OUTPUT( SENSOR_PIR_IO_NUM);
-	PIN_PULLUP_DIS( SENSOR_PIR_IO_MUX);
-	//GPIO_REG_WRITE( GPIO_STATUS_W1TC_ADDRESS, BIT( SENSOR_PIR_IO_NUM)); // Clear GPIO status
-	gpio_pin_intr_state_set( GPIO_ID_PIN( SENSOR_PIR_IO_NUM), GPIO_PIN_INTR_POSEDGE); // Interrupt on POSETIVE edge
-
-	ETS_GPIO_INTR_ENABLE(); // Enable gpio interrupts
-}
-
-LOCAL void ICACHE_FLASH_ATTR
-pir_handler_down()
-{
-	uint32 gpio_status;	
-	gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
-	os_printf( " |LVZAINA| ===> intr_handler_up: %d,(pir_off:%d)\n", gpio_status, g_pir_stop);
-
-	ETS_GPIO_INTR_DISABLE(); // Disable gpio interrupts
-
-	if( gpio_status & BIT(SENSOR_PIR_IO_NUM))
-	{
-		GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT( SENSOR_PIR_IO_NUM) );
-		
-		pir_time_intr_down = system_get_time();
-
-
-		pir_time_intr_interval = pir_time_intr_down - pir_time_intr_up;
-#if 1
-		if( pir_time_intr_interval > PIR_TIME_INTERVAL_40M)
-		{
-			os_printf( " |LVZAINA| ======> %d < %d\n", PIR_TIME_INTERVAL_40M, pir_time_intr_interval);
-#else
-		if( pir_time_intr_interval > PIR_TIME_INTERVAL_200M)
-		{
-			os_printf( " |LVZAINA| ======> %d < %d\n", PIR_TIME_INTERVAL_200M, pir_time_intr_interval);
-#endif
-			if( g_pir_stop != 1)
-				alerting();
-			os_timer_disarm(&pir_timer);
-			os_timer_setfn(&pir_timer, (os_timer_func_t *)pir_register_intr_up_ssl, NULL);
-			os_timer_arm(&pir_timer, (rw.time*1000+PIR_DELAY_TIME), 0);	
-			gpio_pin_intr_state_set(GPIO_ID_PIN( SENSOR_PIR_IO_NUM), GPIO_PIN_INTR_DISABLE);
-		}
-		else
-		{
-			os_printf( " |LVZAINA| skip ================> %d\n", pir_time_intr_interval);
-			pir_register_intr_up();
-		}
-
-		//os_printf( " |LVZAINA| ==> D | [%d]\n", pir_time_intr_down);
-	}
-	if( gpio_status & BIT(SENSOR_KEY_IO_NUM))
-	{
-		GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT( SENSOR_KEY_IO_NUM) );
-
-		key_hander();
-
-	}
-	if( gpio_status & BIT(SENSOR_ALARM_IO_NUM))
-	{
-		GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT( SENSOR_ALARM_IO_NUM) );
-
-		os_printf( " |LVZAINA| ===> ALARM !");
-
-	}
-	ETS_GPIO_INTR_ENABLE(); // Enable gpio interrupts
-}
-
-LOCAL void ICACHE_FLASH_ATTR
-pir_register_intr_up()
-{
-	//ETS_GPIO_INTR_DISABLE(); // Disable gpio interrupts
-
-	ETS_GPIO_INTR_ATTACH( pir_handler_up, NULL); // GPIO interrupt handler
-	PIN_FUNC_SELECT( SENSOR_PIR_IO_MUX, SENSOR_PIR_IO_FUNC);
-	GPIO_DIS_OUTPUT( SENSOR_PIR_IO_NUM);
-	PIN_PULLUP_DIS( SENSOR_PIR_IO_MUX);
-	//GPIO_REG_WRITE( GPIO_STATUS_W1TC_ADDRESS, BIT( SENSOR_PIR_IO_NUM)); // Clear GPIO status
-	gpio_pin_intr_state_set( GPIO_ID_PIN( SENSOR_PIR_IO_NUM), GPIO_PIN_INTR_POSEDGE); // Interrupt on POSETIVE edge
-
-	//ETS_GPIO_INTR_ENABLE(); // Enable gpio interrupts
-}
- 
-LOCAL void ICACHE_FLASH_ATTR
-pir_register_intr_down()
-{
-	//ETS_GPIO_INTR_DISABLE(); // Disable gpio interrupts
-
-//	uint32 now_time = system_get_time();
-
-	ETS_GPIO_INTR_ATTACH( pir_handler_down, NULL); // GPIO interrupt handler
-	PIN_FUNC_SELECT( SENSOR_PIR_IO_MUX, SENSOR_PIR_IO_FUNC);
-	GPIO_DIS_OUTPUT( SENSOR_PIR_IO_NUM);
-	PIN_PULLUP_DIS( SENSOR_PIR_IO_MUX);
-	//GPIO_REG_WRITE( GPIO_STATUS_W1TC_ADDRESS, BIT( SENSOR_PIR_IO_NUM)); // Clear GPIO status
-	gpio_pin_intr_state_set( GPIO_ID_PIN( SENSOR_PIR_IO_NUM), GPIO_PIN_INTR_NEGEDGE); // Interrupt on NEGATIVE edge
-
-	//ETS_GPIO_INTR_ENABLE(); // Enable gpio interrupts
 }
 
 #endif
@@ -932,12 +898,17 @@ setup(void) {
 *******************************************************************************/
 void user_init(void)
 {
-    os_printf("LVZIANA ===> Start! \n");
-    os_printf("LVZIANA ========> Netviom ID:  |%s| \n", NETVIOM_DEVICE_ID);
-		
-	show_sysinfo();
+#ifdef USE_US_TIMER
+	system_timer_reinit();
+#endif
+	//test flash 	
+	//os_memset(&rw, 0, sizeof(rw_info));
+	//write_cfg_flash( &rw);
 
 	rwinfo_load();
+
+	show_sysinfo();
+
 	if( rw.time == 0)
 		user_update_status( NETVIOM_STATUS_HIDE_MODE);
 

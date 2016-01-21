@@ -61,6 +61,7 @@ device_get(struct jsontree_context *js_ctx)
     if (os_strncmp(path, "manufacture", 11) == 0) {
         jsontree_write_string(js_ctx, "Espressif Systems");
     } else if (os_strncmp(path, "product", 7) == 0) {
+        jsontree_write_string(js_ctx, "Netviom");
 #if SENSOR_DEVICE
 #if HUMITURE_SUB_DEVICE
         jsontree_write_string(js_ctx, "Humiture");
